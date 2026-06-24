@@ -1,24 +1,44 @@
-# Knee MRI — ACL tear explorer
+# Knee MRI — ACL tear grader
 A small Python project for **anyone who has a knee MRI on disk as a DICOM study**.
 It reads the study, prepares it for an MRNet-style model, lets you view the
-images as ordinary pictures, and runs ACL-tear inference.
+images as ordinary pictures, and grades the ACL **no tear / partial / complete**.
 
 ### Why this exists
-I recently tore my ACL, and waiting on the radiologist's report was taking
-forever — so I built this to take a look myself in the meantime. The catch I
-only realized later: the available trained models predict ACL tear **yes/no**,
-but the MRNet labels don't distinguish a **partial** tear from a **complete**
-one — and complete-vs-partial is basically the thing that decides whether you
-need surgery. So this can hint that *something* is wrong with the ACL, but it
-**can't** tell you how bad it is or whether to operate. Lesson learned: it's a
-curiosity tool, not a substitute for the report. 🙃
+After my own knee MRI, I was stuck waiting forever on the radiologist's report
+to find out whether I'd need surgery — so I went looking for a model that could
+give me an early read. The problem: every pretrained knee-MRI model I could find
+only predicts ACL tear **yes/no** — including the popular
+[MRNet](https://stanfordmlgroup.github.io/projects/mrnet/) (Bien et al.,
+Stanford). None of them separate a **partial** tear from a **complete** one,
+which is basically the distinction that decides whether you need surgery. So I
+built the model that didn't exist: a 3-class classifier that grades
+**no tear / partial / complete**, trained on the
+[KneeMRI dataset](https://zenodo.org/records/14789903) (Štajduhar et al.,
+Clinical Hospital Centre Rijeka), the one source that actually labels each exam
+healthy / partial / complete. That said, the grade is still the shakiest part
+(very little complete-tear data for the model to learn from). So please use this
+tool for satisfaction — THIS IS NOT A DIAGNOSIS! LOL.
 
 If you got a CD/DVD copy from your clinic, the scan is almost certainly in
-**DICOM** format (the medical-imaging standard — it's what these discs use),
+DICOM format (the medical-imaging standard — it's what these discs use),
 which is exactly what this reads. Some discs also bundle a viewer or a few
 exported JPEGs, but the real image data is the DICOM.
 
 > ## This is not a diagnosis, use only for your satisfaction
+
+## Highlights
+
+| Area | What's here |
+|------|-------------|
+| **Real DICOM pipeline** | Reads a JPEG2000-compressed knee study, groups files into series, detects each plane from `ImageOrientationPatient`, and picks the best sequence per plane |
+| **Partial vs complete grading** | `MRNet(num_classes=3)` trained on **KneeMRI (Rijeka)** — 917 sagittal PD-FS volumes labeled healthy / partial / complete |
+| **Trainer + predictor** | `train_acl_grade.py` (stratified split, **balanced oversampling** for the 690/172/55 imbalance) and `predict_grade.py` (per-grade probabilities on any DICOM study) |
+| **Honest engineering** | best balanced acc **0.449** (epoch 2); caught and fixed a mid-run collapse to all-healthy by switching from loss-weighting to balanced sampling |
+| **Safe weight loading** | refuses checkpoints whose classifier head doesn't fit — no silent fake scores |
+| **Example result** | grade model on the bundled scan → healthy **0.02** / partial **0.28** / complete **0.70** |
+
+> Numbers above are a research/portfolio estimate, **not** a diagnosis — see the
+> caveats under **Grade the tear** below.
 
 ## What you need
 A knee MRI as a **DICOM study** — a folder of image files (named `1`, `2`, `3`…
@@ -35,7 +55,7 @@ its path on the command line — the scripts that read DICOM accept `--dicom`:
 
 ```bash
 python src/export_images.py --dicom "D:/path/to/your/DICOM/PATxxx/STUDYxxx"
-python src/predict_acl.py   --dicom "D:/path/to/your/DICOM/PATxxx/STUDYxxx"
+python src/predict_grade.py  --dicom "D:/path/to/your/DICOM/PATxxx/STUDYxxx"
 ```
 
 ## Project layout
@@ -50,14 +70,11 @@ Knee-MRI/
     │   ├── mri_pipeline.py       load DICOM, group series, build tensors
     │   ├── mrnet_model.py        the MRNet network (Bien et al., 2018)
     │   ├── export_images.py      save slices as PNGs for human viewing
-    │   ├── predict_acl.py        run your own trained weights, combine planes
-    │   ├── train_mrnet.py        train weights on the Stanford MRNet dataset
-    │   ├── run_alberto.py        run a community 3-plane model (the quick route)
-    │   └── fetch_kaggle_weights.py
+    │   ├── train_acl_grade.py    train the 3-class grade model on KneeMRI
+    │   └── predict_grade.py      grade a study: healthy / partial / complete
     ├── models/
-    │   ├── trained/            your own weights from train_mrnet.py (gitignored)
-    │   ├── community/          alberto_mrnet.pth — third-party model (gitignored)
-    │   └── downloads/          anything pulled from Kaggle
+    │   └── trained/            acl_grade.pth from train_acl_grade.py (gitignored)
+    ├── data/                   KneeMRI dataset (gitignored, CC BY-NC-ND)
     └── outputs/                generated PNGs and result text files (gitignored)
 ```
 
@@ -83,16 +100,9 @@ python src/mri_pipeline.py
 python src/export_images.py
 #    -> outputs/exported_images/Sagittal_.../slice_00.png ... open and scroll
 
-# 3a. Quick score from a community model (no training needed)
-python src/run_alberto.py        # prints to screen AND writes outputs/acl_result.txt
-
-# 3b. Score from your OWN trained weights (needs train_mrnet.py first)
-python src/predict_acl.py
+# 3. Grade the tear (needs a trained model — see "Grade the tear" below)
+python src/predict_grade.py
 ```
-
-> Note: `run_alberto.py` currently runs on the study in `knee-mri-copy/`. To use a
-> different study with it, swap your data into `knee-mri-copy/` or edit the
-> `DICOM` path near the top of the file.
 
 ## Looking at the ACL yourself (no model needed)
 
@@ -104,36 +114,89 @@ diagonally** from the back-top (femur) to the front-bottom (tibia).
 - **Possible tear:** the band looks **wavy, blurry, thickened, or missing**,
   often with **bright (white) fluid signal** where the fibers should be.
 
-A trained eye is far more reliable than any model below.
+A trained eye is far more reliable than the model below.
 
-## Two ways to get a score
+## Grade the tear: partial vs complete (`train_acl_grade.py` + `predict_grade.py`)
 
-### A. Community model — fast, unverified (`run_alberto.py`)
-
-`models/community/alberto_mrnet.pth` is a third-party 3-plane model
-([AlbertoUAH](https://github.com/AlbertoUAH/Knee-Lesions-Classification-via-Deep-Learning)),
-trained on the Stanford MRNet data. `run_alberto.py` runs it on all three planes
-and prints abnormal / ACL / meniscus probabilities.
-
-Caveats: unverified quality, trained on specific MRI sequences that may differ
-from yours, and it's a *pickled full model* loaded via a restricted unpickler
-(only audited torch classes are allowed). A toy sanity-check, **not** a
-trustworthy result.
-
-### B. Train your own — legitimate, defensible (`train_mrnet.py`)
-
-Get the Stanford MRNet dataset (free, requires research-use registration at
-https://stanfordmlgroup.github.io/competitions/mrnet/), then:
+To get at the question that actually matters — **partial vs complete** — this
+trains a 3-class model on the
+[KneeMRI (Rijeka) dataset](https://zenodo.org/records/14789903), which labels
+each exam `healthy` / `partial` / `complete`. KneeMRI is sagittal PD fat-sat,
+matching a `SAG PD FS` series well.
 
 ```bash
-python src/train_mrnet.py --data /path/to/MRNet-v1.0 --plane sagittal --epochs 15
-# tip: add --limit 20 for a ~1-minute smoke test before the full (slow CPU) run
+# 1. download + extract KneeMRI into data/kneemri/  (metadata.csv + volumetric_data/*.pck)
+# 2. train (CPU ~8 min/epoch; balanced oversampling handles the 690/172/55 imbalance)
+python src/train_acl_grade.py --epochs 8
+# 3. grade your scan
+python src/predict_grade.py
 ```
 
-Weights land in `models/trained/acl_<plane>.pth`. Then `python src/predict_acl.py`
-loads them. If no weights are present, `predict_acl.py` refuses to invent a number.
-`mrnet_model.py` also **rejects** any checkpoint whose classifier head doesn't fit,
-so a mismatched `.pth` can never silently produce a fake score.
+`predict_grade.py` prints a probability for each grade, e.g. on the bundled scan: (my actual results lol I'm gonna need surgery)
+```
+  healthy       : 0.018
+  partial tear  : 0.283
+  complete tear : 0.699   <-- most likely
+```
+
+> ⚠️ **Read the limits.** The `complete` class has only **55 examples** in the
+> whole dataset (~47 after the split), the model's balanced accuracy is a modest
+
+
+**Step 1 — see what's in the scan.** The pipeline groups the loose DICOM files
+into series and picks the best one per plane:
+
+```bash
+$ python src/mri_pipeline.py
+Found 7 series in .../knee-mri-copy/DICOM/PAT001/STUDY001
+
+   Series 8  [Axial]    'AX PD FS'            (50 slices)
+   Series 13 [Coronal]  'COR PD DIXON FS_W'   (32 slices)
+   Series 17 [Sagittal] 'SAG PD FS'           (35 slices)
+   ...
+Selected for ACL model:
+  Sagittal : 'SAG PD FS'           (best plane for the ACL)
+  Coronal  : 'COR PD DIXON FS_W'
+  Axial    : 'AX PD FS'
+```
+
+**Step 2 — look at the images yourself** (always worth doing first):
+
+```bash
+$ python src/export_images.py
+  Sagittal: exported 35 slices -> outputs/exported_images/Sagittal_SAG_PD_FS
+  Coronal : exported 32 slices -> outputs/exported_images/Coronal_COR_PD_DIXON_FS_W
+  Axial   : exported 50 slices -> outputs/exported_images/Axial_AX_PD_FS
+```
+
+**Step 3 — train the grade model on KneeMRI** (download + extract into
+`data/kneemri/` first):
+
+```bash
+$ python src/train_acl_grade.py --epochs 8
+Device: cpu.  Train 779  Val 138
+Train class counts {'healthy': 586, 'partial': 146, 'complete': 47}
+epoch  2  loss 0.8961  val_acc 0.601  bal_acc 0.449  recall(h/p/c) 0.73/0.12/0.50
+   saved models/trained/acl_grade.pth (bal_acc 0.449)
+...
+Done. Best balanced accuracy 0.449.
+```
+
+**Step 4 — grade your scan:**
+
+```bash
+$ python src/predict_grade.py
+Sagittal series: SAG PD FS  (35 slices)
+========================================================
+  healthy       : 0.018
+  partial tear  : 0.283
+  complete tear : 0.699   <-- most likely
+========================================================
+  Most likely grade: complete tear (69.9%)
+```
+
+So on this scan the model leans **complete**. But the grade is the least-reliable
+step (see the limits above), and none of this replaces the radiologist's report.
 
 ## How plane/series selection works (for any study)
 
@@ -152,6 +215,7 @@ Your study's series names will differ; the selection logic is the same.
 
 ## Credit / further reading
 
-- MRNet: Bien et al., *PLOS Medicine* 2018 —
+- MRNet (architecture): Bien et al., *PLOS Medicine* 2018 —
   https://stanfordmlgroup.github.io/projects/mrnet/
-- Community model: https://github.com/AlbertoUAH/Knee-Lesions-Classification-via-Deep-Learning
+- KneeMRI (partial/complete grades): Štajduhar et al., *CMPB* 2017 —
+  https://zenodo.org/records/14789903

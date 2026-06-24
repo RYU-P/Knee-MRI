@@ -3,9 +3,9 @@ MRNet model (Bien et al., Stanford 2018) — the standard architecture for
 detecting ACL tears / meniscus tears / abnormality from a single-plane knee
 MRI stack.
 
-One MRNet instance handles one plane (sagittal, coronal, or axial). The full
-system runs three of them and combines their outputs. This file defines the
-network; weights are loaded separately (see predict_acl.py / train_mrnet.py).
+Here it is used with num_classes=3 to grade the ACL (healthy / partial /
+complete) on the sagittal plane. This file defines the network; weights are
+loaded separately (see train_acl_grade.py / predict_grade.py).
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def load_mrnet(weight_path: str | None, device: str = "cpu",
                 f"classifier weights that fit this architecture "
                 f"(matched {len(loaded)}/{len(own)} layers; classifier head "
                 f"missing). These weights are not compatible — do not trust "
-                f"any score from them. Retrain with train_mrnet.py."
+                f"any score from them. Retrain with train_acl_grade.py."
             )
     model.to(device).eval()
     return model
