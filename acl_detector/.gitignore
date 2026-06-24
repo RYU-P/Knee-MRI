@@ -1,0 +1,14 @@
+# generated outputs (PNG exports, result text files)
+outputs/
+
+# model weights — large binaries / third-party, don't commit
+models/trained/
+models/community/
+models/downloads/
+
+# datasets — large + license-restricted (KneeMRI is CC BY-NC-ND), don't commit
+data/
+
+# python
+__pycache__/
+*.pyc
