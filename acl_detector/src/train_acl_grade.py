@@ -162,7 +162,7 @@ def main():
         if bal == bal and bal > best_bal:           # bal==bal filters NaN
             best_bal = bal
             torch.save({"state_dict": model.state_dict(),
-                        "classes": CLASSES, "balanced_acc": bal}, args.out)
+                        "classes": CLASSES, "balanced_acc": float(bal)}, args.out)
             print(f"   saved {os.path.relpath(args.out, PROJECT)} (bal_acc {bal:.3f})")
 
     print(f"\nDone. Best balanced accuracy {best_bal:.3f}. Weights -> {args.out}")

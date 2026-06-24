@@ -5,4 +5,3 @@ pylibjpeg
 pylibjpeg-openjpeg
 torch
 torchvision
-kaggle        # only needed for fetch_kaggle_weights.py
